@@ -18,6 +18,7 @@ from django.utils.deprecation import MiddlewareMixin
 from django_structlog.middlewares import RequestMiddleware
 from django_structlog.signals import bind_extra_request_failed_metadata
 from opentelemetry import trace
+from rest_framework import status
 import structlog
 
 from nautobot.core.api.utils import is_api_request, rest_api_server_error
@@ -25,7 +26,12 @@ from nautobot.core.authentication import (
     assign_groups_to_user,
     assign_permissions_to_user,
 )
-from nautobot.core.rate_limiting.budget_helpers import get_budget_state, get_user_rate_limit_bucket_identifier
+from nautobot.core.rate_limiting.budget_helpers import (
+    charge_bucket,
+    get_current_bucket,
+    get_seconds_remaining_in_window,
+    get_user_rate_limit_bucket_id,
+)
 from nautobot.core.rate_limiting.rest_calculator import (
     classify_rest_read_request_features,
     estimate_rest_read_request_cost,
@@ -569,6 +575,12 @@ class ComplexityCostRateLimitingMiddleware:
 
     def perform_rest_api_complexity_cost_rate_limiting(self, request):
         # ----------------------------------------------------------------------
+        #  Extract Token
+        # ----------------------------------------------------------------------
+        user_token = request.META.get("HTTP_AUTHORIZATION", None)
+        user_rate_limit_bucket_id = get_user_rate_limit_bucket_id(user_token)
+
+        # ----------------------------------------------------------------------
         #  Calculate Cost
         # ----------------------------------------------------------------------
         if request.method in READ_METHODS:
@@ -585,20 +597,25 @@ class ComplexityCostRateLimitingMiddleware:
         #  Spend The Caller's Budget
         # ----------------------------------------------------------------------
         quota = settings.NAUTOBOT_REST_RATE_LIMITING_QUOTA
-        time_window = settings.NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS
+        rate_limiting_window_in_seconds = settings.NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS
+        current_time = time.time()
 
-        user_rate_limit_bucket_identifier = get_user_rate_limit_bucket_identifier(request)
+        consumed_quota = 0
+        if user_rate_limit_bucket_id is not None:
+            charge_bucket(
+                user_rate_limit_bucket_id,
+                request_complexity_cost_estimate,
+                current_time,
+                rate_limiting_window_in_seconds,
+            )
+            consumed_quota = get_current_bucket(
+                user_rate_limit_bucket_id,
+                current_time,
+                rate_limiting_window_in_seconds,
+            )
 
-        consumed_quota, remaining_window_time = get_budget_state(
-            user_rate_limit_bucket_identifier,
-            request_complexity_cost_estimate,
-            time_window
-        )
-
-        # The counter was unreachable. Serve the request and advertise no budget, rather than
-        # publishing headers that cannot be vouched for or throttling on a number we do not have.
         if consumed_quota is None:
-            return self.get_response(request)
+            consumed_quota = 0
 
         # ----------------------------------------------------------------------
         #  Generate Header Data
@@ -606,22 +623,23 @@ class ComplexityCostRateLimitingMiddleware:
         quota_policy_name = "rest-complexity-cost"
 
         remaining_quota = quota - consumed_quota
+        advertised_remaining_quota = max(0, remaining_quota)
+        remaining_window_time = get_seconds_remaining_in_window(current_time, rate_limiting_window_in_seconds)
 
         rate_limit_policy_data = [
-            f'"{quota_policy_name}"',  # Connects RateLimitPolicy to RateLimit headers, states which cost rule is being applied
-            f"q={quota}",  # total budget granted per window,
-            f"w={time_window}",  # Duration that quota applies
+            f'"{quota_policy_name}"',
+            f"q={quota}",
+            f"w={rate_limiting_window_in_seconds}",
         ]
         rate_limit_data = [
-            f'"{quota_policy_name}"',  # Connects RateLimitPolicy to RateLimit headers, states which cost rule is being applied
-            # Clamped at zero for display only. The unclamped `remaining_quota` drives the decision
-            # below, so an overspend is still enforced even though it is never advertised as negative.
-            f"r={max(0, remaining_quota)}",  # Remaining quota
+            f'"{quota_policy_name}"',
+            f"r={advertised_remaining_quota}",
             f"t={remaining_window_time}",
         ]
 
         rate_limit_policy_string = ";".join(rate_limit_policy_data)
         rate_limit_string = ";".join(rate_limit_data)
+
         rate_limit_headers = {
             "RateLimit-Policy": rate_limit_policy_string,
             "RateLimit": rate_limit_string,
@@ -632,22 +650,20 @@ class ComplexityCostRateLimitingMiddleware:
         #  If Quota Is Hit, No Further Middleware Allowed, Terminate
         # --------------------
         should_complexity_cost_calculation_enforced = settings.NAUTOBOT_REST_RATE_LIMITING_MODE == "enforce"
-        if should_complexity_cost_calculation_enforced is True and remaining_quota < 0:
-            json_quota_exceeded_response = JsonResponse(
-                {"detail": "Request was throttled. The estimated complexity cost exceeds the quota."},
-                status=429,
-            )
-            json_quota_exceeded_response.headers["Retry-After"] = str(remaining_window_time)
-            for header_name, header_value in rate_limit_headers.items():
-                json_quota_exceeded_response.headers[header_name] = header_value
+        is_over_quota = remaining_quota < 0
 
-            return json_quota_exceeded_response
+        if should_complexity_cost_calculation_enforced is True and is_over_quota is True:
+            response = JsonResponse(
+                {"detail": "Request was throttled. The estimated complexity cost exceeds the quota."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+            response.headers["Retry-After"] = str(remaining_window_time)
+        else:
+            response = self.get_response(request)
 
         # ----------------------------------------------------------------------
         #  Add To Header
         # ----------------------------------------------------------------------
-        response = self.get_response(request)
-
         for header_name, header_value in rate_limit_headers.items():
             response.headers[header_name] = header_value
 
