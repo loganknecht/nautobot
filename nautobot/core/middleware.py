@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from contextlib import ExitStack
 import json
 import logging
+import math
 import re
 import time
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ from nautobot.core.authentication import (
     assign_groups_to_user,
     assign_permissions_to_user,
 )
+from nautobot.core.rate_limiting.budget_helpers import get_budget_state, get_user_rate_limit_bucket_identifier
 from nautobot.core.rate_limiting.rest_calculator import (
     classify_rest_read_request_features,
     estimate_rest_read_request_cost,
@@ -575,19 +577,35 @@ class ComplexityCostRateLimitingMiddleware:
             request_complexity_cost_estimate = estimate_rest_read_request_cost(read_request_features)
         elif request.method in WRITE_METHODS:
             # TODO: Revisit calculation for write requests
-            request_complexity_cost_estimate = settings.NAUTOBOT_REST_RATE_LIMITING_WRITE_COST
+            request_complexity_cost_estimate = math.ceil(settings.NAUTOBOT_REST_RATE_LIMITING_WRITE_COST)
         else:
+            return self.get_response(request)
+
+        # ----------------------------------------------------------------------
+        #  Spend The Caller's Budget
+        # ----------------------------------------------------------------------
+        quota = settings.NAUTOBOT_REST_RATE_LIMITING_QUOTA
+        time_window = settings.NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS
+
+        user_rate_limit_bucket_identifier = get_user_rate_limit_bucket_identifier(request)
+
+        consumed_quota, remaining_window_time = get_budget_state(
+            user_rate_limit_bucket_identifier,
+            request_complexity_cost_estimate,
+            time_window
+        )
+
+        # The counter was unreachable. Serve the request and advertise no budget, rather than
+        # publishing headers that cannot be vouched for or throttling on a number we do not have.
+        if consumed_quota is None:
             return self.get_response(request)
 
         # ----------------------------------------------------------------------
         #  Generate Header Data
         # ----------------------------------------------------------------------
         quota_policy_name = "rest-complexity-cost"
-        quota = 1000
-        time_window = 1000
 
-        remaining_quota = max(-1, quota - request_complexity_cost_estimate)
-        remaining_window = time_window
+        remaining_quota = quota - consumed_quota
 
         rate_limit_policy_data = [
             f'"{quota_policy_name}"',  # Connects RateLimitPolicy to RateLimit headers, states which cost rule is being applied
@@ -596,8 +614,10 @@ class ComplexityCostRateLimitingMiddleware:
         ]
         rate_limit_data = [
             f'"{quota_policy_name}"',  # Connects RateLimitPolicy to RateLimit headers, states which cost rule is being applied
-            f"r={remaining_quota}",  # Remaining quota
-            f"t={remaining_window}",  # Remaining window of time
+            # Clamped at zero for display only. The unclamped `remaining_quota` drives the decision
+            # below, so an overspend is still enforced even though it is never advertised as negative.
+            f"r={max(0, remaining_quota)}",  # Remaining quota
+            f"t={remaining_window_time}",
         ]
 
         rate_limit_policy_string = ";".join(rate_limit_policy_data)
@@ -617,7 +637,7 @@ class ComplexityCostRateLimitingMiddleware:
                 {"detail": "Request was throttled. The estimated complexity cost exceeds the quota."},
                 status=429,
             )
-            json_quota_exceeded_response.headers["Retry-After"] = str(remaining_window)
+            json_quota_exceeded_response.headers["Retry-After"] = str(remaining_window_time)
             for header_name, header_value in rate_limit_headers.items():
                 json_quota_exceeded_response.headers[header_name] = header_value
 

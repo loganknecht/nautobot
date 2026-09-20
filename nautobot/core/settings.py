@@ -77,6 +77,12 @@ NAUTOBOT_REST_RATE_LIMITING_COMPUTED_FIELDS_MULTIPLIER = float(
     os.getenv("NAUTOBOT_REST_RATE_LIMITING_COMPUTED_FIELDS_MULTIPLIER", "3.0")
 )
 NAUTOBOT_REST_RATE_LIMITING_CSV_MULTIPLIER = float(os.getenv("NAUTOBOT_REST_RATE_LIMITING_CSV_MULTIPLIER", "3.0"))
+# Complexity cost each caller may spend per window. Size this against the cost settings above: with
+# the defaults, a plain unfiltered list request costs 4, so a quota of 1000 permits roughly 250 such
+# requests per window.
+NAUTOBOT_REST_RATE_LIMITING_QUOTA = int(os.getenv("NAUTOBOT_REST_RATE_LIMITING_QUOTA", "1000"))
+# Width of the fixed budget window, in seconds. Budgets reset on multiples of this value.
+NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS = int(os.getenv("NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS", "5"))
 
 # GraphQL Rate Limiting Complexity Cost Settings
 NAUTOBOT_GRAPHQL_RATE_LIMITING_MODE = str(os.getenv("NAUTOBOT_GRAPHQL_RATE_LIMITING_MODE", "off"))
