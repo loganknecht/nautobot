@@ -28,8 +28,10 @@ from nautobot.core.authentication import (
 )
 from nautobot.core.rate_limiting.budget_helpers import (
     charge_bucket,
+    COUNTER_TTL_WINDOW_MULTIPLE,
     get_current_bucket,
     get_seconds_remaining_in_window,
+    get_time_window,
     get_user_rate_limit_bucket_id,
 )
 from nautobot.core.rate_limiting.rest_calculator import (
@@ -574,11 +576,12 @@ class ComplexityCostRateLimitingMiddleware:
         return response
 
     def perform_rest_api_complexity_cost_rate_limiting(self, request):
+        should_complexity_cost_calculation_enforced = settings.NAUTOBOT_REST_RATE_LIMITING_MODE == "enforce"
+
         # ----------------------------------------------------------------------
         #  Extract Token
         # ----------------------------------------------------------------------
         user_token = request.META.get("HTTP_AUTHORIZATION", None)
-        user_rate_limit_bucket_id = get_user_rate_limit_bucket_id(user_token)
 
         # ----------------------------------------------------------------------
         #  Calculate Cost
@@ -599,20 +602,14 @@ class ComplexityCostRateLimitingMiddleware:
         quota = settings.NAUTOBOT_REST_RATE_LIMITING_QUOTA
         rate_limiting_window_in_seconds = settings.NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS
         current_time = time.time()
+        current_window = get_time_window(current_time, rate_limiting_window_in_seconds)
+        counter_timeout = rate_limiting_window_in_seconds * COUNTER_TTL_WINDOW_MULTIPLE
 
         consumed_quota = 0
-        if user_rate_limit_bucket_id is not None:
-            charge_bucket(
-                user_rate_limit_bucket_id,
-                request_complexity_cost_estimate,
-                current_time,
-                rate_limiting_window_in_seconds,
-            )
-            consumed_quota = get_current_bucket(
-                user_rate_limit_bucket_id,
-                current_time,
-                rate_limiting_window_in_seconds,
-            )
+        if user_token is not None and should_complexity_cost_calculation_enforced is True:
+            user_rate_limit_bucket_id = get_user_rate_limit_bucket_id(user_token, current_window)
+            charge_bucket(user_rate_limit_bucket_id, request_complexity_cost_estimate, counter_timeout)
+            consumed_quota = get_current_bucket(user_rate_limit_bucket_id)
 
         if consumed_quota is None:
             consumed_quota = 0
@@ -649,7 +646,6 @@ class ComplexityCostRateLimitingMiddleware:
         # --------------------
         #  If Quota Is Hit, No Further Middleware Allowed, Terminate
         # --------------------
-        should_complexity_cost_calculation_enforced = settings.NAUTOBOT_REST_RATE_LIMITING_MODE == "enforce"
         is_over_quota = remaining_quota < 0
 
         if should_complexity_cost_calculation_enforced is True and is_over_quota is True:
