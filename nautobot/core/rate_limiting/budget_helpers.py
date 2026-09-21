@@ -42,9 +42,9 @@ def get_seconds_remaining_in_window(current_time, window_duration):
 
 def charge_bucket(bucket_id, cost, timeout):
     try:
-        consumed_budget = cache.incr(bucket_id, cost, ignore_key_check=True)
+        cache.incr(bucket_id, cost, ignore_key_check=True)
         cache.touch(bucket_id, timeout)
-        return consumed_budget
+        return None
     except redis.exceptions.RedisError:
         return None
 

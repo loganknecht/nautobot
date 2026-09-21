@@ -126,7 +126,6 @@ class ComplexityCostRateLimitingBudgetTestCase(APITestCase):
 
         return first_response, None
 
-
     # --------------------------------------------------------------------------
     # Rate Limiting Reported
     # --------------------------------------------------------------------------
@@ -152,11 +151,14 @@ class ComplexityCostRateLimitingBudgetTestCase(APITestCase):
 
         self.assertEqual(first_response_remaining_quota, second_response_remaining_quota)
 
-
     # --------------------------------------------------------------------------
     # Rate Limiting Enforced
     # --------------------------------------------------------------------------
-    @override_settings(NAUTOBOT_REST_RATE_LIMITING_MODE="enforce", NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600, NAUTOBOT_REST_RATE_LIMITING_QUOTA=10)
+    @override_settings(
+        NAUTOBOT_REST_RATE_LIMITING_MODE="enforce",
+        NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600,
+        NAUTOBOT_REST_RATE_LIMITING_QUOTA=10,
+    )
     def test_unauthenticated_request_returns_a_full_budget_when_enforcement_enabled(self):
         api_response = self.client.get(reverse("api-status"))
 
@@ -169,14 +171,21 @@ class ComplexityCostRateLimitingBudgetTestCase(APITestCase):
         remaining_quota = self.get_remaining_quota(api_response)
         self.assertEqual(settings.NAUTOBOT_REST_RATE_LIMITING_QUOTA, remaining_quota)
 
-
-    @override_settings(NAUTOBOT_REST_RATE_LIMITING_MODE="enforce", NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600, NAUTOBOT_REST_RATE_LIMITING_QUOTA=10)
+    @override_settings(
+        NAUTOBOT_REST_RATE_LIMITING_MODE="enforce",
+        NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600,
+        NAUTOBOT_REST_RATE_LIMITING_QUOTA=10,
+    )
     def test_unauthenticated_request_is_served_rather_than_erroring(self):
         response = self.client.get(reverse("api-status"))
 
         self.assertNotEqual(response.status_code, 500)
 
-    @override_settings(NAUTOBOT_REST_RATE_LIMITING_MODE="enforce", NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600, NAUTOBOT_REST_RATE_LIMITING_QUOTA=10)
+    @override_settings(
+        NAUTOBOT_REST_RATE_LIMITING_MODE="enforce",
+        NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600,
+        NAUTOBOT_REST_RATE_LIMITING_QUOTA=10,
+    )
     def test_consumed_budget_accumulates_across_requests_until_the_quota_is_exhausted(self):
         first_response, throttled_response = self.call_api_until_throttled()
 
@@ -214,7 +223,11 @@ class ComplexityCostRateLimitingBudgetTestCase(APITestCase):
 
         self.assertLess(second_response_remaining_quota, first_response_remaining_quota)
 
-    @override_settings(NAUTOBOT_REST_RATE_LIMITING_MODE="enforce", NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600, NAUTOBOT_REST_RATE_LIMITING_QUOTA=10)
+    @override_settings(
+        NAUTOBOT_REST_RATE_LIMITING_MODE="enforce",
+        NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600,
+        NAUTOBOT_REST_RATE_LIMITING_QUOTA=10,
+    )
     def test_throttled_response_advertises_when_to_retry(self):
         _, throttled_response = self.call_api_until_throttled()
 
@@ -222,7 +235,11 @@ class ComplexityCostRateLimitingBudgetTestCase(APITestCase):
         self.assertIn("Retry-After", throttled_response.headers)
         self.assertGreaterEqual(int(throttled_response.headers["Retry-After"]), 1)
 
-    @override_settings(NAUTOBOT_REST_RATE_LIMITING_MODE="enforce", NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600, NAUTOBOT_REST_RATE_LIMITING_QUOTA=10)
+    @override_settings(
+        NAUTOBOT_REST_RATE_LIMITING_MODE="enforce",
+        NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600,
+        NAUTOBOT_REST_RATE_LIMITING_QUOTA=10,
+    )
     def test_remaining_quota_is_never_advertised_as_negative(self):
         _, first_throttled_response = self.call_api_until_throttled()
         _, second_throttled_response = self.call_api_until_throttled()
@@ -233,7 +250,11 @@ class ComplexityCostRateLimitingBudgetTestCase(APITestCase):
         self.assertIsNotNone(second_throttled_response)
         self.assertEqual(self.get_remaining_quota(second_throttled_response), 0)
 
-    @override_settings(NAUTOBOT_REST_RATE_LIMITING_MODE="enforce", NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600, NAUTOBOT_REST_RATE_LIMITING_QUOTA=10)
+    @override_settings(
+        NAUTOBOT_REST_RATE_LIMITING_MODE="enforce",
+        NAUTOBOT_REST_RATE_LIMITING_WINDOW_SECONDS=3600,
+        NAUTOBOT_REST_RATE_LIMITING_QUOTA=10,
+    )
     def test_budget_is_tracked_per_token_rather_than_per_user(self):
         _, throttled_response = self.call_api_until_throttled()
         self.assertIsNotNone(throttled_response)
@@ -245,7 +266,6 @@ class ComplexityCostRateLimitingBudgetTestCase(APITestCase):
         api_response = self.call_api()
         self.assertEqual(api_response.status_code, status.HTTP_200_OK)
 
-
     @override_settings(NAUTOBOT_REST_RATE_LIMITING_MODE="enforce")
     def test_unreachable_caching_service_reports_a_full_budget(self):
         with (
@@ -256,7 +276,7 @@ class ComplexityCostRateLimitingBudgetTestCase(APITestCase):
         ):
             api_response = self.call_api()
 
-        remaining_quota =  self.get_remaining_quota(api_response)
+        remaining_quota = self.get_remaining_quota(api_response)
 
         self.assertEqual(api_response.status_code, status.HTTP_200_OK)
         self.assertEqual(remaining_quota, settings.NAUTOBOT_REST_RATE_LIMITING_QUOTA)
