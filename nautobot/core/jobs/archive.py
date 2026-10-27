@@ -1,4 +1,4 @@
-from nautobot.extras.jobs import BooleanVar, IntegerVar, Job, MultiChoiceVar
+from nautobot.extras.jobs import DryRunVar, IntegerVar, Job, MultiChoiceVar
 
 name = "System Jobs"
 
@@ -43,10 +43,13 @@ class ArchiveOldRecords(Job):
         min_value=1,
         required=False,
     )
-    dry_run = BooleanVar(description="Report what would be moved without moving anything.", default=True)
+    dryrun = DryRunVar(description="Report what would be archived without moving anything.")
 
+    class Meta:
+        name = "Archive Old Records"
+        description = "This job will migrate the specified Model records to a separate databse and table in order to reduce cardinality of the existing database."
+        has_sensitive_variables = False
+        dryrun_default = True
 
-    def run(
-        self, *, records_to_archive=None, archive_age_threshold=None, archive_batch_size=None, dry_run=True
-    ):
+    def run(self, *, records_to_archive=None, archive_age_threshold=None, archive_batch_size=None, dryrun=True):
         pass
