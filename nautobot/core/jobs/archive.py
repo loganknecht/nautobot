@@ -1,4 +1,12 @@
+from datetime import timedelta
+
+from django.core.exceptions import PermissionDenied
+from django.db.models.signals import pre_delete
+from django.utils import timezone
+
 from nautobot.extras.jobs import DryRunVar, IntegerVar, Job, MultiChoiceVar
+from nautobot.extras.models import ArchivedObjectChange, ObjectChange
+from nautobot.extras.signals import _handle_deleted_object
 
 name = "System Jobs"
 
@@ -29,7 +37,7 @@ class ArchiveOldRecords(Job):
     )
     archive_age_threshold = IntegerVar(
         description=(
-            "Records older than this age are selected to be archived. Leave empty to use the ARCHIVE_AGE_THRESHOLD setting."
+            "Records older than this age are selected to be archived. Leave empty to use the ARCHIVE_RECORD_DEFAULT_AGE_THRESHOLD setting."
         ),
         label="Archive Age Threshold",
         min_value=1,
@@ -37,7 +45,7 @@ class ArchiveOldRecords(Job):
     )
     archive_batch_size = IntegerVar(
         description=(
-            "Records to move per each archival step. Leave empty to use the ARCHIVE_BATCH_SIZE setting. Lower it if the archival task runs out of memory."
+            "Records to move per each archival step. Leave empty to use the ARCHIVE_RECORD_DEFAULT_BATCH_SIZE setting. Lower it if the archival task runs out of memory."
         ),
         label="Archive Batch Size",
         min_value=1,
