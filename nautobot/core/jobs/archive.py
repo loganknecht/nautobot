@@ -1,15 +1,14 @@
 from datetime import timedelta
+import math
 
-from django.core.exceptions import PermissionDenied
-from django.db.models.signals import pre_delete
 from django.utils import timezone
 
 from nautobot.core.utils.config import get_settings_or_config
 from nautobot.extras.jobs import DryRunVar, IntegerVar, Job, MultiChoiceVar
-from nautobot.extras.models import ArchivedObjectChange, ObjectChange
-from nautobot.extras.signals import _handle_deleted_object
+from nautobot.extras.models import ObjectChange
 
 name = "System Jobs"
+JOB_NAME = "Archive Old Records"
 
 # Archival order matters, used to determine what gets archived first to remove issues with cascading deletions
 ARCHIVAL_ORDER = (
@@ -32,7 +31,7 @@ class ArchiveOldRecords(Job):
     """
     Move database records that are past specific age threshold into a warm database and table.
 
-    This job helps migrate old database records to a separate database and table in order to help optimize performance by minimizing the cardinality required for queries.
+    This job helps migrate old database records to a separate database and table in order to help optimize performance of database queries.
     """
 
     ui_selected_models_to_archive = MultiChoiceVar(
@@ -60,12 +59,12 @@ class ArchiveOldRecords(Job):
     dryrun = DryRunVar(description="Report what would be archived without moving anything.")
 
     class Meta:
-        name = "Archive Old Records"
-        description = "This job will migrate the specified Model records to a separate databse and table in order to reduce cardinality of the existing database."
+        name = JOB_NAME
+        description = "This job will migrate the specified Model records to a separate database and table in order to enhance performance of the existing database."
         has_sensitive_variables = False
         dryrun_default = True
 
-    def run(
+    def run(  # pylint: disable=arguments-differ
         self,
         *,
         ui_selected_models_to_archive=None,
@@ -83,15 +82,87 @@ class ArchiveOldRecords(Job):
         )
         archive_model_batch_size = ui_archive_batch_size or get_settings_or_config("ARCHIVE_MODEL_DEFAULT_BATCH_SIZE")
 
+        # Resolved once for the whole run so that every model is archived against the same instant,
+        # rather than each one re-reading the clock as the run progresses.
+        archive_model_threshold_timestamp = timezone.now() - timedelta(days=archive_model_age_threshold)
+
         for model_label in dependency_sorted_models_to_archive:
             if model_label == "extras.objectchange":
-                self._archive_object_changes(archive_model_age_threshold, archive_model_batch_size, dryrun)
+                self._archive_object_changes(archive_model_threshold_timestamp, archive_model_batch_size, dryrun)
             # TODO: extras.jobresult, which carries its log and console entries with it.
 
-    def _archive_object_changes(self, age_threshold, batch_size, dryrun):
-        pass
-        # TODO
+    def _archive_object_changes(self, threshold_timestamp, batch_size, dryrun):
+        """
+        Archive `ObjectChange` records older than `threshold_timestamp`, one batch at a time.
 
-    def _archive_object_change_batch(self, batch):
+        `ObjectChange` has no relations in either direction, so it is archived on its own and carries no
+        ordering constraints.
+
+        Args:
+            threshold_timestamp (datetime): Records older than this are archived.
+            batch_size (int): Records to move per batch.
+            dryrun (bool): Report what would move without moving anything.
+
+        Returns:
+            (int): Records archived, or on a dry run the count a real run would archive.
+        """
+        object_changes_to_archive = ObjectChange.objects.filter(time__lt=threshold_timestamp).order_by("time")
+
+        object_change_count = object_changes_to_archive.count()
+
+        if not object_change_count:
+            self.logger.info("No ObjectChange records older than %s", threshold_timestamp)
+            return 0
+
+        total_batch_count = math.ceil(object_change_count / batch_size)
+
+        if dryrun:
+            self.logger.warning(
+                "%s Dry Run: %d ObjectChange records in batches of %d for a total of %d operations would be archived.",
+                JOB_NAME,
+                object_change_count,
+                batch_size,
+                total_batch_count,
+            )
+            return object_change_count
+
+        total_archived_object_change_count = 0
+        current_batch = 0
+
+        while current_batch < total_batch_count:
+            # Re-sliced rather than paged with an offset: each batch's rows are deleted before the next
+            # slice is taken, so the front of the queryset is always the next batch. An offset would skip
+            # records as the table shrinks underneath it.
+            object_change_batch = list(object_changes_to_archive[:batch_size])
+            if not object_change_batch:
+                break
+
+            current_batch += 1
+
+            try:
+                current_archived_object_change_count = self._archive_object_change_batch(object_change_batch)
+            except Exception as exception:
+                self.fail(
+                    "Stopping at batch %d: %s. Archived %d of %d ObjectChange records before stopping.",
+                    current_batch,
+                    exception,
+                    total_archived_object_change_count,
+                    object_change_count,
+                )
+                return total_archived_object_change_count
+
+            total_archived_object_change_count += current_archived_object_change_count
+            self.logger.info(
+                "Batch %d: archived %d ObjectChange records", current_batch, current_archived_object_change_count
+            )
+
+        self.logger.success(
+            "Archived %d ObjectChange records across %d batches",
+            total_archived_object_change_count,
+            current_batch,
+        )
+        return total_archived_object_change_count
+
+    def _archive_object_change_batch(self, object_change_batch):
         pass
         # TODO
